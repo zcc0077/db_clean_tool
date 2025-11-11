@@ -1,3 +1,9 @@
+> Usage:
+```bash
+pip install -r requirements.txt
+python -m db_cleaner.cli
+```
+
 # db_clean_tool
 A universal db data cleaning tool
 # Features
