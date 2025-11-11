@@ -1,0 +1,8 @@
+# YAML parser library
+PyYAML>=6.0
+
+# Database connection & ORM engine
+SQLAlchemy>=2.0
+
+# PostgreSQL driver for psycopg2 (binary build, easier to install than source)
+psycopg2-binary>=2.9
