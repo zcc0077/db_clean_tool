@@ -1,28 +1,71 @@
 import logging
+import os
 import re
-from typing import List, Tuple, Dict, Any, Optional
+from typing import Tuple, Optional, Dict, Any
 
 import psycopg2
+from logging.handlers import TimedRotatingFileHandler, RotatingFileHandler
 
 
-def setup_logging(log_file: str) -> None:
-    logging.basicConfig(
-        filename=log_file,
-        level=logging.INFO,
-        format="%(asctime)s [%(levelname)s] %(message)s",
-    )
+def setup_logging(log_file: str,
+                  rotate: Optional[Dict[str, Any]] = None,
+                  console: bool = True) -> None:
+    """
+    Configure logging with rotation.
+
+    rotate:
+      - Timed rotation (default):
+        {"type": "timed", "when": "D", "interval": 1, "backup_count": 7}
+      - Size rotation:
+        {"type": "size", "max_bytes": 10485760, "backup_count": 10}
+    console: also log to stderr if True.
+    """
+    # Ensure log directory exists.
+    log_dir = os.path.dirname(log_file)
+    if log_dir:
+        os.makedirs(log_dir, exist_ok=True)
+
+    logger = logging.getLogger()
+    logger.setLevel(logging.INFO)
+    logger.handlers.clear()
+
+    fmt = logging.Formatter("%(asctime)s [%(levelname)s] %(message)s")
+
+    if rotate and (rotate.get("type") == "size"):
+        handler = RotatingFileHandler(
+            log_file,
+            maxBytes=int(rotate.get("max_bytes", 10 * 1024 * 1024)),
+            backupCount=int(rotate.get("backup_count", 10)),
+            encoding="utf-8",
+        )
+    else:
+        # Default to timed rotation daily.
+        when = str(rotate.get("when", "D")) if rotate else "D"
+        interval = int(rotate.get("interval", 1)) if rotate else 1
+        backup_count = int(rotate.get("backup_count", 7)) if rotate else 7
+        handler = TimedRotatingFileHandler(
+            log_file,
+            when=when,
+            interval=interval,
+            backupCount=backup_count,
+            encoding="utf-8",
+            utc=True,
+        )
+
+    handler.setFormatter(fmt)
+    logger.addHandler(handler)
+
+    if console:
+        ch = logging.StreamHandler()
+        ch.setFormatter(fmt)
+        logger.addHandler(ch)
 
 
 def _shorten(text: str, max_len: int = 2000) -> str:
-    """Limit very long SQL prints to avoid flooding logs."""
     return (text[:max_len] + "...") if len(text) > max_len else text
 
 
 def _normalize_casts(text: str) -> str:
-    """
-    Collapse duplicated casts like '::uuid::uuid' -> '::uuid'.
-    Works for any typename: ::type::type -> ::type.
-    """
     return re.sub(r"::([A-Za-z0-9_]+)\s*::\1", r"::\1", text)
 
 

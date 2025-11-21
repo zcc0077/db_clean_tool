@@ -16,15 +16,17 @@ def main():
     skip_tables: Set[str] = set(cfg.get("skip_tables", []))
     skip_columns: Set[str] = set(cfg.get("skip_columns", []))
     dry_run = bool(cfg.get("dry_run", True))
-    auto_discover = bool(cfg.get("auto_discover_related", True))
 
-    setup_logging(cfg.get("log_file", "./cleaner.log"))
+    log_file = cfg.get("log_file", "./cleaner.log")
+    log_rotate = cfg.get("log_rotate")  # dict or None
+    log_console = bool(cfg.get("log_console", True))
+    setup_logging(log_file, rotate=log_rotate, console=log_console)
 
     engine = create_engine(db_uri)
     conn: PGConnection = engine.raw_connection()
     try:
         for conf in cfg["tables"]:
-            clean_table(conn, conf, skip_tables, skip_columns, dry_run, auto_discover)
+            clean_table(conn, conf, skip_tables, skip_columns, dry_run)
     finally:
         conn.close()
 

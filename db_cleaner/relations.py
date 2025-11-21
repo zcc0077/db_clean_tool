@@ -16,22 +16,30 @@ def auto_find_fk_relations(conn: PGConnection, parent_qualified: str) -> List[Di
     SELECT
       n_child.nspname AS child_schema,
       c_child.relname AS child_table,
-      array_agg(a_child.attname ORDER BY array_position(c.conkey, a_child.attnum)) AS child_columns,
-      array_agg(a_parent.attname ORDER BY array_position(c.confkey, a_parent.attnum)) AS parent_columns
+      array(
+        SELECT a.attname 
+        FROM pg_attribute a 
+        WHERE a.attrelid = c_child.oid AND a.attnum = ANY(c.conkey)
+        ORDER BY array_position(c.conkey, a.attnum)
+      ) AS child_columns,
+      array(
+        SELECT a.attname 
+        FROM pg_attribute a 
+        WHERE a.attrelid = c_parent.oid AND a.attnum = ANY(c.confkey)
+        ORDER BY array_position(c.confkey, a.attnum)
+      ) AS parent_columns
     FROM pg_constraint c
       JOIN pg_class c_child ON c.conrelid = c_child.oid
       JOIN pg_namespace n_child ON n_child.oid = c_child.relnamespace
       JOIN pg_class c_parent ON c.confrelid = c_parent.oid
       JOIN pg_namespace n_parent ON n_parent.oid = c_parent.relnamespace
-      JOIN pg_attribute a_child ON a_child.attrelid = c_child.oid AND a_child.attnum = ANY (c.conkey)
-      JOIN pg_attribute a_parent ON a_parent.attrelid = c_parent.oid AND a_parent.attnum = ANY (c.confkey)
     WHERE c.contype = 'f'
-      AND n_parent.nspname = %s AND c_parent.relname = %s
-    GROUP BY child_schema, child_table;
+      AND n_parent.nspname = %s AND c_parent.relname = %s;
     """
     with conn.cursor(cursor_factory=ErrorLoggingCursorParam) as cur:
         cur.execute(q, (parent_schema, parent_table))
         rows = cur.fetchall()
+    
     rels = []
     for child_schema, child_table, child_cols, parent_cols in rows:
         rels.append({
@@ -107,3 +115,4 @@ def ensure_auto_children(conn: PGConnection, relations_graph: Dict[str, List[Dic
         if key not in existing_keys:
             existing.append(r)
             existing_keys.add(key)
+            

@@ -1,7 +1,11 @@
 db_uri: "postgresql://user:pwd@ip:5432/mydb"
 log_file: "./cleaner.log"
 dry_run: false
-auto_discover_related: true
+log_console: false
+log_rotate:
+  type: "size"
+  max_bytes: 10485760
+  backup_count: 10
 
 skip_tables: ["tenant"]
 skip_columns: []
@@ -13,6 +17,8 @@ tables:
     expire_days: 70
     batch_size: 1000
     archive: true
+    auto_discover_related: true
+    disable_cutoff: false
     time_out: 0 # 0 means not set timeout
     archive_path: "./archive"
     related:
