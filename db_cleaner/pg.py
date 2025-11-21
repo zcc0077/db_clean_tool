@@ -73,6 +73,11 @@ def build_conditions_sql(conditions: Optional[List[Dict[str, Any]]]) -> Tuple[sq
     clauses = []
     params: List[Any] = []
     for cond in conditions:
+        if "raw_sql" in cond:
+            raw = cond["raw_sql"]
+            clauses.append(sql.SQL(raw))
+            params.extend(cond.get("params", []))
+            continue
         col = cond["column"]
         op = cond["op"].upper().strip()
         if op in ("IS NULL", "IS NOT NULL"):
@@ -96,22 +101,25 @@ def fetch_batch(conn: PGConnection,
                 table: str,
                 key_columns: List[str],
                 date_column: str,
-                cutoff,
-                batch_size: int) -> List[Tuple]:
-    """
-    Fetch a batch of parent keys older than cutoff.
-    Returns keys only: List[Tuple].
-    """
+                cutoff,                # can be None
+                batch_size: int,
+                conditions: Optional[List[Dict[str, Any]]] = None) -> List[Tuple]:
     schema, tbl = split_schema_table(table)
     keys_sql = sql.SQL(",").join([sql.Identifier(c) for c in key_columns])
     with conn.cursor(cursor_factory=ErrorLoggingCursorParam) as cur:
-        q = sql.SQL(
-            "SELECT {keys} FROM {tbl} WHERE {date_col} < %s ORDER BY {date_col} ASC LIMIT %s"
-        ).format(
-            keys=keys_sql,
-            tbl=sql.Identifier(schema, tbl),
-            date_col=sql.Identifier(date_column),
+        base = sql.SQL("SELECT {keys} FROM {tbl} WHERE TRUE").format(
+            keys=keys_sql, tbl=sql.Identifier(schema, tbl)
         )
-        cur.execute(q, (cutoff, batch_size))
+        params: List[Any] = []
+        if cutoff is not None:
+            base = base + sql.SQL(" AND {} < %s").format(sql.Identifier(date_column))
+            params.append(cutoff)
+
+        cond_sql, cond_params = build_conditions_sql(conditions)
+        q = base + cond_sql + sql.SQL(" ORDER BY {} ASC LIMIT %s").format(sql.Identifier(date_column))
+        params.extend(cond_params)
+        params.append(batch_size)
+
+        cur.execute(q, params)
         rows = cur.fetchall()
     return [tuple(r) for r in rows]

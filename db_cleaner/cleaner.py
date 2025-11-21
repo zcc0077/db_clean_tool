@@ -1,5 +1,6 @@
 import logging
 import time
+import sys
 from datetime import datetime, timedelta
 from typing import List, Tuple, Dict, Any, Optional, Set
 
@@ -252,22 +253,30 @@ def clean_table(conn: PGConnection,
                 conf: Dict[str, Any],
                 skip_tables: Set[str],
                 skip_columns: Set[str],
-                dry_run: bool,
-                auto_discover: bool) -> None:
+                dry_run: bool) -> None:
     table = qualify_table(conf["name"])
     key_columns: List[str] = conf["key_columns"]
     date_col: str = conf["date_column"]
     time_out: int = conf["time_out"]
+    enable: bool = conf.get("enable", True)
+    if not enable:
+        logging.warning(f"[SKIP] Table '{table}' skipped due to disabled")
+        print(f"[SKIP] Table '{table}' skipped due to disabled")
+        return
 
     if conf["name"] in skip_tables or date_col in skip_columns:
         logging.warning(f"[SKIP] Table '{table}' skipped due to filter rules")
         print(f"[SKIP] Table '{table}' skipped due to filter rules")
         return
 
+    auto_discover = bool(conf.get("auto_discover_related", False))
     expire_days = int(conf["expire_days"])
     batch_size = int(conf["batch_size"])
     archive = bool(conf.get("archive", False))
     archive_path = conf.get("archive_path")
+    
+    conditions = conf.get("conditions", []) or []
+    disable_cutoff = bool(conf.get("disable_cutoff", False))
 
     manual_relations_cfg = conf.get("related", []) or []
     manual_relations = normalize_manual_relations(manual_relations_cfg, main_table=table)
@@ -281,16 +290,20 @@ def clean_table(conn: PGConnection,
     for r in merged:
         relations_graph.setdefault(r["parent_table"], []).append(r)
 
-    cutoff_date = datetime.now() - timedelta(days=expire_days)
+    cutoff_date = None if disable_cutoff else (datetime.now() - timedelta(days=expire_days)).replace(hour=0, minute=0, second=0, microsecond=0)
     total_deleted = 0
     run_delete_totals: Dict[str, int] = {}
 
-    logging.info(f"[START] Cleaning table '{table}' before {cutoff_date}")
-    print(f"[START] Cleaning table '{table}' older than {expire_days} days (before {cutoff_date})")
+    logging.info(f"[START] Cleaning table '{table}' " +
+                 (f"with cutoff {cutoff_date} " if cutoff_date else "without default cutoff ") +
+                 (f"and {len(conditions)} parent condition(s)."))
+    print(f"[START] Cleaning table '{table}' " +
+          (f"older than {expire_days} days (before {cutoff_date}) " if cutoff_date else "without default cutoff ") +
+          (f"with {len(conditions)} extra parent condition(s)."))
 
     while True:
         keys = fetch_batch(
-            conn, table, key_columns, date_col, cutoff_date, batch_size
+            conn, table, key_columns, date_col, cutoff_date, batch_size, conditions=conditions
         )
         if not keys:
             print(f"[DONE] Table '{table}' cleaned, total deleted: {total_deleted}")
@@ -303,6 +316,15 @@ def clean_table(conn: PGConnection,
             break
 
         discovered_auto: Set[str] = set()
+        
+        # Temporarily set statement timeout for this session/transaction
+        if time_out:
+            with conn.cursor(cursor_factory=ErrorLoggingCursorParam) as cur:
+                try:
+                    cur.execute("SET LOCAL statement_timeout = %s", (f"{time_out}s",))
+                except Exception:
+                    cur.execute("SET statement_timeout = %s", (f"{time_out}s",))
+                    
         if dry_run:
             print(f"[DRY-RUN] {table}: Would delete up to {len(keys)} rows in this batch.")
             logging.info(f"[DRY-RUN] {table}: Would delete up to {len(keys)} rows in this batch.")
@@ -332,14 +354,6 @@ def clean_table(conn: PGConnection,
         try:
             batch_delete_totals: Dict[str, int] = {}
             archive_buffers: Dict[str, List[Tuple]] = {}
-
-            # Temporarily set statement timeout for this session/transaction
-            if time_out:
-                with conn.cursor(cursor_factory=ErrorLoggingCursorParam) as cur:
-                    try:
-                        cur.execute("SET LOCAL statement_timeout = %s", (f"{time_out}s",))
-                    except Exception:
-                        cur.execute("SET statement_timeout = %s", (f"{time_out}s",))
 
             # child -> parent (within a single transaction)
             cascade_delete(
@@ -386,11 +400,13 @@ def clean_table(conn: PGConnection,
             detail = format_pg_error(e)
             logging.error(f"[ERROR] {table} psycopg2.Error: {detail}")
             print(f"[ERROR] Rolled back transaction for '{table}': {detail}")
+            sys.exit(1)
             break
         except Exception as e:
             conn.rollback()
             logging.error(f"[ERROR] Transaction rolled back for table '{table}': {e}")
             print(f"[ERROR] Rolled back transaction for '{table}': {e}")
+            sys.exit(1)
             break
 
         time.sleep(0.2)
