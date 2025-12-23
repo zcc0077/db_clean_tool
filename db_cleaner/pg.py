@@ -116,7 +116,14 @@ def fetch_batch(conn: PGConnection,
             params.append(cutoff)
 
         cond_sql, cond_params = build_conditions_sql(conditions)
-        q = base + cond_sql + sql.SQL(" ORDER BY {} ASC LIMIT %s").format(sql.Identifier(date_column))
+        q = base + cond_sql
+        
+        # Only add ORDER BY if we have a cutoff date (for deterministic batch processing)
+        # Without cutoff, ORDER BY adds unnecessary overhead for large tables
+        if cutoff is not None:
+            q = q + sql.SQL(" ORDER BY {} ASC").format(sql.Identifier(date_column))
+            
+        q = q + sql.SQL(" LIMIT %s")
         params.extend(cond_params)
         params.append(batch_size)
 

@@ -7,11 +7,19 @@ from .sql_render import ErrorLoggingCursorParam
 from .utils import qualify_table, split_schema_table
 
 
-def auto_find_fk_relations(conn: PGConnection, parent_qualified: str) -> List[Dict[str, Any]]:
+def auto_find_fk_relations(conn: PGConnection, parent_qualified: str, exclude_cascade: bool = True) -> List[Dict[str, Any]]:
     """
     Find all foreign key relations in a PostgreSQL database that involve a given parent table.
+    
+    Args:
+        conn: Database connection
+        parent_qualified: Parent table name (schema.table)
+        exclude_cascade: If True, exclude foreign keys with CASCADE delete action to avoid redundant processing
     """
     parent_schema, parent_table = split_schema_table(parent_qualified)
+    
+    # Query includes confdeltype to identify CASCADE delete actions
+    # confdeltype: 'a' = NO ACTION, 'r' = RESTRICT, 'c' = CASCADE, 'n' = SET NULL, 'd' = SET DEFAULT
     q = """
     SELECT
       n_child.nspname AS child_schema,
@@ -27,7 +35,9 @@ def auto_find_fk_relations(conn: PGConnection, parent_qualified: str) -> List[Di
         FROM pg_attribute a 
         WHERE a.attrelid = c_parent.oid AND a.attnum = ANY(c.confkey)
         ORDER BY array_position(c.confkey, a.attnum)
-      ) AS parent_columns
+      ) AS parent_columns,
+      c.confdeltype AS delete_action,
+      c.conname AS constraint_name
     FROM pg_constraint c
       JOIN pg_class c_child ON c.conrelid = c_child.oid
       JOIN pg_namespace n_child ON n_child.oid = c_child.relnamespace
@@ -41,15 +51,40 @@ def auto_find_fk_relations(conn: PGConnection, parent_qualified: str) -> List[Di
         rows = cur.fetchall()
     
     rels = []
-    for child_schema, child_table, child_cols, parent_cols in rows:
+    skipped_cascade = []
+    
+    for child_schema, child_table, child_cols, parent_cols, delete_action, constraint_name in rows:
+        child_table_qualified = f"{child_schema}.{child_table}"
+        
+        # Skip tables with CASCADE delete if exclude_cascade is True
+        if exclude_cascade and delete_action == 'c':
+            skipped_cascade.append({
+                "table": child_table_qualified,
+                "constraint": constraint_name,
+                "delete_action": "CASCADE"
+            })
+            continue
+            
         rels.append({
-            "name": f"{child_schema}.{child_table}",
+            "name": child_table_qualified,
             "parent_table": f"{parent_schema}.{parent_table}",
             "mapping": {
                 "child_columns": list(child_cols),
                 "parent_columns": list(parent_cols),
             },
+            "delete_action": delete_action,
+            "constraint_name": constraint_name,
         })
+    
+    # Log skipped CASCADE relationships for transparency
+    if skipped_cascade:
+        import logging
+        print(f"[AUTO-DISCOVER] Skipped {len(skipped_cascade)} tables with CASCADE delete rules:")
+        logging.info(f"[AUTO-DISCOVER] Skipped {len(skipped_cascade)} tables with CASCADE delete rules:")
+        for item in skipped_cascade:
+            print(f"  - {item['table']} (constraint: {item['constraint']})")
+            logging.info(f"  - {item['table']} (constraint: {item['constraint']})")
+    
     return rels
 
 
@@ -100,8 +135,8 @@ def union_relations(manual: List[Dict[str, Any]], auto: List[Dict[str, Any]]) ->
 
 
 def ensure_auto_children(conn: PGConnection, relations_graph: Dict[str, List[Dict[str, Any]]],
-                         table: str, skip_tables, skip_columns) -> None:
-    auto_rels = auto_find_fk_relations(conn, table)
+                         table: str, skip_tables, skip_columns, exclude_cascade: bool = True) -> None:
+    auto_rels = auto_find_fk_relations(conn, table, exclude_cascade=exclude_cascade)
     auto_rels = filter_relations(auto_rels, skip_tables, skip_columns)
     existing = relations_graph.setdefault(table, [])
     existing_keys = set(

@@ -1,4 +1,5 @@
 import logging
+import os
 import time
 import sys
 from datetime import datetime, timedelta
@@ -18,7 +19,7 @@ from .pg import (
     fetch_batch,
 )
 from .archive import select_rows_for_archive, archive_to_csv
-from .utils import qualify_table, split_schema_table, format_pg_error
+from .utils import qualify_table, split_schema_table, format_pg_error, format_duration
 
 
 def count_child_matches(conn, child_table: str, mapping: Dict[str, List[str]],
@@ -128,7 +129,7 @@ def cascade_delete(conn: PGConnection,
         archive_buffers = {}
 
     if auto_discover and current_table not in discovered_auto:
-        ensure_auto_children(conn, relations_graph, current_table, skip_tables, skip_columns)
+        ensure_auto_children(conn, relations_graph, current_table, skip_tables, skip_columns, exclude_cascade=True)
         discovered_auto.add(current_table)
 
     # Recursively handle child relationships: First into child table and delete the child table itself
@@ -270,9 +271,21 @@ def clean_table(conn: PGConnection,
         return
 
     auto_discover = bool(conf.get("auto_discover_related", False))
-    expire_days = int(conf["expire_days"])
+    expire_days = os.getenv('EXPIRY_DAYS')
+    if expire_days is not None:
+        expire_days = int(expire_days)
+        print(f"✓ Using environment variable to set expire_days = {expire_days}")
+    else:
+        expire_days = int(conf["expire_days"]) or 45
+        
     batch_size = int(conf["batch_size"])
-    archive = bool(conf.get("archive", False))
+    archive = os.getenv('ARCHIVE')
+    if archive is not None:
+        archive = archive.lower() in ('true', '1', 'yes', 'on')
+        print(f"✓ Using environment variable to set archive = {archive}")
+    else:
+        archive = bool(conf.get("archive", False))
+    
     archive_path = conf.get("archive_path")
     
     conditions = conf.get("conditions", []) or []
@@ -282,7 +295,8 @@ def clean_table(conn: PGConnection,
     manual_relations = normalize_manual_relations(manual_relations_cfg, main_table=table)
     manual_relations = filter_relations(manual_relations, skip_tables, skip_columns)
 
-    auto_relations = auto_find_fk_relations(conn, table) if auto_discover else []
+    exclude_cascade = bool(conf.get("exclude_cascade_fk", True))
+    auto_relations = auto_find_fk_relations(conn, table, exclude_cascade=exclude_cascade) if auto_discover else []
     auto_relations = filter_relations(auto_relations, skip_tables, skip_columns)
 
     merged = union_relations(manual_relations, auto_relations)
@@ -352,6 +366,7 @@ def clean_table(conn: PGConnection,
             break
 
         try:
+            batch_start_time = time.time()
             batch_delete_totals: Dict[str, int] = {}
             archive_buffers: Dict[str, List[Tuple]] = {}
 
@@ -382,6 +397,8 @@ def clean_table(conn: PGConnection,
                         archive_to_csv(rows, archive_path, tbl_name)
 
             total_deleted += len(keys)
+            batch_end_time = time.time()
+            batch_duration = batch_end_time - batch_start_time
 
             if batch_delete_totals:
                 print("[SUMMARY] Per-table deletion in this batch:")
@@ -392,8 +409,8 @@ def clean_table(conn: PGConnection,
                 for tbl, cnt in batch_delete_totals.items():
                     run_delete_totals[tbl] = run_delete_totals.get(tbl, 0) + cnt
 
-            print(f"[BATCH] {table}: Completed batch of {len(keys)} keys. Total deleted parents: {total_deleted}")
-            logging.info(f"[BATCH] {table}: Completed batch of {len(keys)} keys. Total parents: {total_deleted}")
+            print(f"[BATCH] {table}: Completed batch of {len(keys)} keys in {format_duration(batch_duration)}. Total deleted parents: {total_deleted}")
+            logging.info(f"[BATCH] {table}: Completed batch of {len(keys)} keys in {format_duration(batch_duration)}. Total parents: {total_deleted}")
 
         except psycopg2.Error as e:
             conn.rollback()
