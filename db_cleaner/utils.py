@@ -102,3 +102,32 @@ def format_pg_error(e: psycopg2.Error) -> str:
     add("routine", getattr(diag, "routine", None) if diag else None)
 
     return " | ".join(parts) if parts else str(e)
+
+
+def format_duration(seconds: float) -> str:
+    """
+    Format duration in seconds to a human-readable string with appropriate units.
+    
+    Args:
+        seconds: Duration in seconds
+        
+    Returns:
+        Formatted duration string (e.g., "2.5s", "1m 30s", "1h 5m 30s")
+    """
+    if seconds < 60:
+        return f"{seconds:.2f}s"
+    elif seconds < 3600:  # Less than 1 hour
+        minutes = int(seconds // 60)
+        remaining_seconds = seconds % 60
+        if remaining_seconds < 1:
+            return f"{minutes}m"
+        return f"{minutes}m {remaining_seconds:.1f}s"
+    else:  # 1 hour or more
+        hours = int(seconds // 3600)
+        remaining_minutes = int((seconds % 3600) // 60)
+        remaining_seconds = seconds % 60
+        if remaining_seconds < 1:
+            if remaining_minutes == 0:
+                return f"{hours}h"
+            return f"{hours}h {remaining_minutes}m"
+        return f"{hours}h {remaining_minutes}m {remaining_seconds:.1f}s"

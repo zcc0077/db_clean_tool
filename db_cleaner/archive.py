@@ -15,9 +15,12 @@ from .utils import split_schema_table
 def archive_to_csv(rows: List[Tuple], archive_dir: str, table_name: str) -> None:
     if not rows:
         return
-    os.makedirs(archive_dir, exist_ok=True)
+    # Create date subdirectory (format: YYMMDD)
+    date_subdir = datetime.now().strftime('%y%m%d')
+    full_archive_dir = os.path.join(archive_dir, date_subdir)
+    os.makedirs(full_archive_dir, exist_ok=True)
     filename = f"{table_name.replace('.', '_')}_{datetime.now().strftime('%Y%m%d%H%M%S')}.csv"
-    filepath = os.path.join(archive_dir, filename)
+    filepath = os.path.join(full_archive_dir, filename)
     with open(filepath, mode="w", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)
         writer.writerows(rows)
